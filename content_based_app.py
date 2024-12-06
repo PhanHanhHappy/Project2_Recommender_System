@@ -38,7 +38,7 @@ with st.container():
         unsafe_allow_html=True,
     )
     font_size = 24
-    st.write(f"<p style='font-size: {font_size}px;'>Giáo viên hướng dẫn: Khuất Phương Thùy</p>", unsafe_allow_html=True)
+    st.write(f"<p style='font-size: {font_size}px;'>Giáo viên hướng dẫn: Khuất Thùy Phương</p>", unsafe_allow_html=True)
     font_size = 24
     st.write(f"<p style='font-size: {font_size}px;'>Ngày báo cáo: 14/12/2024</p>", unsafe_allow_html=True)
 
