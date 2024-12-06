@@ -15,15 +15,13 @@ col1, col2, col3 = st.columns([1, 6, 1])
 with col2:
     st.markdown(
         """
-        <div style="background-color: #f1f0f5; padding: 10px; border-radius: 5px;">
+        <div style="padding: 10px; border-radius: 5px;">
             <h5>Họ và tên nhóm 4:</h5>
-            <p style='font-size: 24px;'>1. Phan Thị Thu Hạnh</p>  
-            <p style='font-size: 24px;'>2. Nguyễn Hải Yến</p>  
         </div>
         """,
         unsafe_allow_html=True,
     )
-
+st.image('memberpicture.jpg', use_container_width=True)
 with st.container():
     st.markdown(
         """
@@ -46,7 +44,7 @@ with st.container():
 st.title("Menu")
 
 # Tạo menu sổ xuống (Dropdown)
-menu_options = ['Mục tiêu', 'Cosine', 'Surprise']
+menu_options = ['Mục tiêu - Nội dung', 'Cosine', 'Surprise', 'Hybrid']
 # Tạo st.selectbox
 with st.container():
     st.markdown(
@@ -54,6 +52,26 @@ with st.container():
         unsafe_allow_html=True
     )
     selected_option = st.selectbox('--', menu_options)
+
+# Đọc dữ liệu sản phẩm
+df_products = pd.read_csv('GUIthird_san_pham_processed_3nd.csv')
+ # Tải mô hình SVD đã lưu
+with open('svd_model.pkl', 'rb') as f:
+    model_svd = pickle.load(f)
+
+    # Tải dữ liệu đánh giá (Rating data)
+danh_gia = pd.read_csv('Danh_gia_filtered.csv')
+
+    # Đổi tên cột cho phù hợp
+danh_gia.rename(columns={
+        'ma_khach_hang': 'user_id',
+        'ma_san_pham': 'item_id',
+        'so_sao': 'rating'
+    }, inplace=True)
+
+# Open and read file to cosine_sim_new
+with open('products_cosine_sim.pkl', 'rb') as f:
+    cosine_sim_new = pickle.load(f)
 
 # Các hàm cho surprise
 # --- Hàm recommend_products_svd ---
@@ -137,15 +155,63 @@ def display_recommended_products(recommended_products, cols=3):
                     expander.write(truncated_description)
                     expander.markdown("Nhấn vào mũi tên để đóng hộp text này.")           
 
-# Đọc dữ liệu sản phẩm
-df_products = pd.read_csv('GUIthird_san_pham_processed_3nd.csv')
+def simple_hybrid_recommendation(user_id, top_n=10, weight_content=0.5):
+    """
+    Kết hợp đơn giản hai mô hình gợi ý dựa trên xếp hạng và hiển thị điểm số.
+    """
+      
+    rated_items = danh_gia[danh_gia['user_id'] == user_id]['item_id'].tolist()
+    all_items = df_products['ma_san_pham'].tolist()
+    all_item_names = df_products['ten_san_pham'].tolist()
+    all_item_ratings = df_products['diem_trung_binh'].tolist() # Lấy danh sách điểm trung bình
 
-# Open and read file to cosine_sim_new
-with open('products_cosine_sim.pkl', 'rb') as f:
-    cosine_sim_new = pickle.load(f)
+    # 1. Tạo danh sách gợi ý từ content-based (top N sản phẩm tương tự)
+    content_recommendations = []
+    for item_id in rated_items:
+        idx = df_products.index[df_products['ma_san_pham'] == item_id][0]
+        sim_scores = list(enumerate(cosine_sim_new[idx]))
+        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+        sim_scores = sim_scores[1:top_n+1]  # Lấy top N sản phẩm tương tự
+        content_recommendations.extend([all_items[i[0]] for i in sim_scores])
+
+    # 2. Tạo danh sách gợi ý từ collaborative filtering (top N sản phẩm có xếp hạng cao nhất)
+    predictions = [model_svd.predict(user_id, item_id) for item_id in all_items]
+    svd_scores = {str(pred.iid): pred.est for pred in predictions}
+    cf_recommendations = sorted(svd_scores, key=svd_scores.get, reverse=True)[:top_n]
+
+    # 3. Kết hợp hai danh sách và loại bỏ trùng lặp
+    combined_recommendations = list(set(content_recommendations + cf_recommendations))
+
+    # 4. Xếp hạng lại dựa trên điểm số từ cả hai mô hình
+    hybrid_scores = {}
+    content_scores_result = {} # Lưu điểm content-based
+    svd_scores_result = {} # Lưu điểm SVD
+    for item_id in combined_recommendations:
+        content_score = 0
+        if item_id in content_recommendations:
+            content_score = 1 / (content_recommendations.index(item_id) + 1)  # Xếp hạng dựa trên vị trí trong danh sách
+        cf_score = svd_scores.get(str(item_id), 0)
+        hybrid_scores[item_id] = weight_content * content_score + (1 - weight_content) * cf_score
+        content_scores_result[item_id] = content_score
+        svd_scores_result[item_id] = cf_score
+
+      # 5. Tạo DataFrame kết quả
+    recommendations_df = pd.DataFrame({
+        'ma_san_pham': list(hybrid_scores.keys()),
+        'ten_san_pham': [all_item_names[all_items.index(int(item_id))] for item_id in hybrid_scores.keys()],
+        'hybrid_score': list(hybrid_scores.values()),
+        'content_score': list(content_scores_result.values()),
+        'svd_score': list(svd_scores_result.values()),
+        'diem_trung_binh': [all_item_ratings[all_items.index(int(item_id))] for item_id in hybrid_scores.keys()] # Thêm cột điểm trung bình
+    })
+
+    # 6. Sắp xếp và trả về top_n sản phẩm
+    recommendations_df = recommendations_df.sort_values(by='hybrid_score', ascending=False).head(top_n)
+    return recommendations_df
+
 
 # Hiển thị nội dung tùy thuộc vào lựa chọn của người dùng
-if selected_option == 'Mục tiêu':
+if selected_option == 'Mục tiêu - Nội dung':
     st.header("Mục Tiêu")
     # Hiển thị nội dung tùy thuộc vào lựa chọn của người dùng
     st.markdown(
@@ -174,7 +240,7 @@ if selected_option == 'Mục tiêu':
         """,
         unsafe_allow_html=True,
     )
-    # Chia thành 4 phần nhỏ
+    # Chia thành 5 phần nhỏ
     
     st.markdown("<span style='font-size: 20px; font-weight: bold;'>1. Khám phá dữ liệu</span>", unsafe_allow_html=True)
     with st.expander("click here"):
@@ -330,6 +396,40 @@ if selected_option == 'Mục tiêu':
         st.markdown("<span style='font-size: 16px; font-weight: bold;'>Kết luận</span>", unsafe_allow_html=True)
         st.write("Collaborative Filtering, với sự hỗ trợ của thư viện Surprise và thuật toán SVD, là một công cụ mạnh mẽ để xây dựng các hệ thống gợi ý cá nhân hóa, giúp nâng cao trải nghiệm người dùng và mang lại hiệu quả kinh doanh cho doanh nghiệp.")
 
+    st.markdown("<span style='font-size: 20px; font-weight: bold;'>5. Kết hợp content-based filtering và Collaborative filtering </span>", unsafe_allow_html=True)
+    with st.expander("click here"):
+        st.markdown(
+        """
+        <div style="font-size: 17px; font-weight: bold; text-align: justify;">
+        a)	Tạo danh sách gợi ý từ mô hình content-based: 
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )    
+        st.write("Sử dụng ma trận cosine_sim để tìm ra top N sản phẩm tương tự với những sản phẩm người dùng đã đánh giá cao.")
+    
+        st.markdown(
+        """
+        <div style="font-size: 17px; font-weight: bold; text-align: justify;">
+        b)	Tạo danh sách gợi ý từ mô hình collaborative filtering: 
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )   
+        st.write("Sử dụng mô hình SVD (model_svd) để dự đoán xếp hạng và chọn ra top N sản phẩm có xếp hạng dự đoán cao nhất.")
+    
+        st.markdown(
+        """
+        <div style="font-size: 17px; font-weight: bold; text-align: justify;">
+        c)	Kết hợp hai danh sách: 
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )   
+        st.write("- Gộp hai danh sách và loại bỏ các sản phẩm trùng lặp.")
+        st.write("-	Xếp hạng các sản phẩm trong danh sách kết hợp dựa trên thứ tự xuất hiện trong hai danh sách ban đầu (ví dụ: sản phẩm xuất hiện ở vị trí cao hơn trong cả hai danh sách sẽ được xếp hạng cao hơn).")
+        st.write("-	Chọn ra top K sản phẩm từ danh sách kết hợp để gợi ý cho người dùng.")
+            
 elif selected_option == 'Cosine':
     st.header("content-based filtering- cosine_similarity")
     st.write("-----------------------------------------------")
@@ -378,41 +478,38 @@ elif selected_option == 'Surprise':
     st.write("-----------------------------------------------")
 
     # --- Phần xử lý cho SVD ---
-
-    # Tải mô hình SVD đã lưu
-    with open('svd_model.pkl', 'rb') as f:
-        model_svd = pickle.load(f)
-
-    # Tải dữ liệu đánh giá (Rating data)
-    danh_gia = pd.read_csv('Danh_gia_filtered.csv')
-
-    # Đổi tên cột cho phù hợp
-    danh_gia.rename(columns={
-        'ma_khach_hang': 'user_id',
-        'ma_san_pham': 'item_id',
-        'so_sao': 'rating'
-    }, inplace=True)
-
     # Tạo Reader để đọc dữ liệu cho SVD
     reader = Reader(rating_scale=(1, 5))
     data = Dataset.load_from_df(danh_gia[['user_id', 'item_id', 'rating']], reader)
 
-    # Lấy danh sách user_id và item_id từ dữ liệu đánh giá
+    # Lấy danh sách user_id từ dữ liệu đánh giá
     user_ids = danh_gia['user_id'].unique().tolist()
-    item_ids = danh_gia['item_id'].unique().tolist()
 
-    # Chọn người dùng và sản phẩm từ danh sách
+    # Chọn người dùng từ danh sách
     user_id = st.selectbox('Chọn ID người dùng:', user_ids)
-    item_id = st.selectbox('Chọn ID sản phẩm:', item_ids)
 
     # Dự đoán điểm đánh giá và gợi ý sản phẩm
-    if st.button('Dự đoán điểm đánh giá'):
-        # Dự đoán điểm đánh giá
-        predicted_rating = model_svd.predict(user_id, item_id).est
-        st.write(f"Điểm đánh giá dự đoán cho sản phẩm {item_id} của người dùng {user_id}: {predicted_rating:.2f}")
-
+    if st.button('Gợi ý sản phẩm'):  # Thay đổi tên nút 
         # Gợi ý sản phẩm
         recommendations = recommend_products_svd(user_id, model_svd, danh_gia, df_products)
+
+        # Hiển thị kết quả
+        st.write("Các sản phẩm gợi ý cho người dùng này:")
+        st.write(recommendations)
+
+elif selected_option == 'Hybrid':
+    st.header("Hybrid Recommendation")
+    st.write("-----------------------------------------------")
+
+    # Lấy danh sách user_id từ dữ liệu đánh giá
+    user_ids = danh_gia['user_id'].unique().tolist()
+
+    # Chọn người dùng từ danh sách
+    user_id = st.selectbox('Chọn ID người dùng:', user_ids)
+
+    # Gợi ý sản phẩm
+    if st.button('Gợi ý sản phẩm'):
+        recommendations = simple_hybrid_recommendation(user_id)  # Gọi hàm simple_hybrid_recommendation
 
         # Hiển thị kết quả
         st.write("Các sản phẩm gợi ý cho người dùng này:")
