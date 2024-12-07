@@ -500,7 +500,8 @@ elif selected_option == 'Surprise':
 elif selected_option == 'Hybrid':
     st.header("Hybrid Recommendation")
     st.write("-----------------------------------------------")
-
+    st.image('weight_score.jpg', use_container_width=True)
+    
     # Lấy danh sách user_id từ dữ liệu đánh giá
     user_ids = danh_gia['user_id'].unique().tolist()
 
