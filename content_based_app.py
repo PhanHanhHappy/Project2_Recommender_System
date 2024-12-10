@@ -651,44 +651,42 @@ elif selected_option == 'Surprise':
 
     # Tạo text_input để nhập liệu
     user_id_input = st.text_input("Nhập User ID mới (giá trị lớn hơn 4700):")
-    
+
     # Tạo selectbox với danh sách User ID
     st.write('Lưu ý: Xóa user ID mới trước khi vào chọn các User ID cũ')
     user_id_options = danh_gia2['ma_khach_hang'].unique().tolist()
-    selected_user_id = st.selectbox("Chọn User ID cũ:", user_id_options)  # Đổi tên biến
+    selected_user_id = st.selectbox("Chọn User ID cũ:", user_id_options)
 
     # Kiểm tra xem người dùng đã nhập liệu hay chọn từ danh sách
     if user_id_input:
-        user_id = int(user_id_input)  # Sử dụng user_id từ text_input
-    else:
-        user_id = selected_user_id  # Sử dụng user_id từ selectbox
-    if user_id:
+        user_id = int(user_id_input)
         if is_new_user(user_id):
-            st.write(user_id," là người dùng mới, các sản phẩm gợi ý:" )
+            st.write(user_id, " là người dùng mới, các sản phẩm gợi ý:")
             recommendations = recommend_products_for_new_user_with_svd(user_id, model_svd, df_products, top_n=10)
-            st.dataframe(recommendations)
         else:
-            st.write(user_id," là người dùng cũ, các sản phẩm gợi ý:")
+            st.write(user_id, " là người dùng cũ, các sản phẩm gợi ý:")
             recommendations = recommend_products_for_old_user(user_id, model_svd, st.session_state.danh_gia2, df_products, top_n=10)
-            st.dataframe(recommendations)
-    
-    # Hiển thị kết quả
-    if 'recommendations' in locals() and not recommendations.empty:  # Kiểm tra recommendations trước khi hiển thị
-        st.write("Các sản phẩm gợi ý cho người dùng này")
-        recommendations_display = recommendations.head(3)
-        cols = st.columns(3)
-        # Hiển thị từng sản phẩm trong một cột
-        for i, product in recommendations_display.iterrows():
-            with cols[i%3]:
-                st.write(product['ten_san_pham'])  # Tiêu đề
-                st.write(f"Giá bán: {product['gia_ban']}")  # Giá bán
-                st.write(f"Giảm giá: {product['ty_le_giam_gia']:.0f}%")  # Giảm giá
-                st.write(f"Điểm trung bình: {product['diem_trung_binh']}")  # Điểm trung bình
-                st.write(f"Volume: {product['volume']}")  # Volume
+        st.dataframe(recommendations)
 
-                # Hiển thị mô tả trong expander
-                with st.expander("Mô tả"):
-                    st.write(product['mo_ta'])  # Mô tả
+        # Hiển thị kết quả
+        if not recommendations.empty:  # Kiểm tra recommendations.empty
+            st.write("Các sản phẩm gợi ý cho người dùng này")
+            display_recommended_products(recommendations.head(3))  # Gọi hàm và truyền recommendations.head(3)
+
+    elif selected_user_id:
+        user_id = selected_user_id
+        if is_new_user(user_id):
+            st.write(user_id, " là người dùng mới, các sản phẩm gợi ý:")
+            recommendations = recommend_products_for_new_user_with_svd(user_id, model_svd, df_products, top_n=10)
+        else:
+            st.write(user_id, " là người dùng cũ, các sản phẩm gợi ý:")
+            recommendations = recommend_products_for_old_user(user_id, model_svd, st.session_state.danh_gia2, df_products, top_n=10)
+        st.dataframe(recommendations)
+
+        # Hiển thị kết quả
+        if not recommendations.empty:  # Kiểm tra recommendations.empty
+            st.write("Các sản phẩm gợi ý cho người dùng này")
+            display_recommended_products(recommendations.head(3))  # Gọi hàm và truyền recommendations.head(3)
 
 elif selected_option == 'Hybrid':
     st.header("Kết hợp content-based filtering và Collaborative filtering")
