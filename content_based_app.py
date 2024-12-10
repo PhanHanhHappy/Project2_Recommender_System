@@ -105,6 +105,7 @@ def display_recommended_products(recommended_products, cols=3):
                 with col:   
                     st.write(product['ten_san_pham'])
                     st.write(f"Giá bán: {product['gia_ban']}")
+                    st.write(f"Giảm giá: {product['ty_le_giam_gia']}")
                     st.write(f"Điểm trung bình: {product['diem_trung_binh']}")
                     st.write(f"Volume: {product['volume']}")
                     
@@ -243,78 +244,75 @@ def check_if_new_user(user_id, danh_gia, khach_hang):
 
 def simple_hybrid_recommendation(user_id, danh_gia, df_products, cosine_sim_new, model_svd, top_n=10, weight_content=0.5):
     """
-    Kết hợp đơn giản hai mô hình gợi ý (Content-based và Collaborative Filtering) cho người dùng,
-    đồng thời xử lý trường hợp người dùng mới hoặc cũ.
+    Kết hợp đơn giản hai mô hình gợi ý (Content-based và Collaborative Filtering) 
+    cho người dùng, đồng thời xử lý trường hợp người dùng mới hoặc cũ.
     """
 
-    # Kiểm tra người dùng mới hay cũ
-    is_new_user = check_if_new_user(user_id, danh_gia, khach_hang)
+    # Gọi hàm check_if_new_user với đầy đủ tham số
+    is_new_user = check_if_new_user(user_id, danh_gia, st.session_state.khach_hang)  
+    # Tạo dictionary lưu trữ thông tin sản phẩm
+    product_info = df_products.set_index('ma_san_pham').to_dict('index')
 
-    # Nếu là người dùng mới, sẽ dùng một chiến lược gợi ý khác
+    # Khởi tạo recommendations_df (để tránh UnboundLocalError)
+    recommendations_df = pd.DataFrame()
+
     if is_new_user:
         print("Đây là người dùng mới.")
 
         # 1. Chiến lược gợi ý cho người dùng mới (Sản phẩm phổ biến hoặc có điểm cao)
-        # Lọc các sản phẩm có điểm trung bình cao hơn 4
         high_rated_items = df_products.groupby('ma_san_pham')['diem_trung_binh'].mean()
         high_rated_items = high_rated_items[high_rated_items > 4].index.tolist()
-
-        # Lọc các sản phẩm phổ biến (đã có nhiều người dùng đánh giá)
         popular_items = danh_gia['ma_san_pham'].value_counts().head(top_n).index.tolist()
-
-        # Kết hợp giữa các sản phẩm phổ biến và sản phẩm có điểm cao
         recommendations = list(set(high_rated_items + popular_items))[:top_n]
 
         # 2. Tính toán Cosine Similarity cho các sản phẩm phổ biến và có điểm cao
         content_recommendations = []
         for item_id in recommendations:
-            idx = df_products[df_products['ma_san_pham'] == item_id].index[0]  # Sử dụng .index để tìm chỉ số sản phẩm
-            sim_scores = list(enumerate(cosine_sim_new[idx]))
-            sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-            sim_scores = sim_scores[1:top_n+1]  # Lấy top N sản phẩm tương tự
-            content_recommendations.extend([df_products['ma_san_pham'].iloc[i[0]] for i in sim_scores])
+            try:
+                idx = df_products[df_products['ma_san_pham'] == item_id].index[0]
+                sim_scores = list(enumerate(cosine_sim_new[idx]))
+                sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+                sim_scores = sim_scores[1:top_n+1]
+                content_recommendations.extend([df_products['ma_san_pham'].iloc[i[0]] for i in sim_scores])
+            except IndexError:
+                print(f"Lỗi IndexError với item_id: {item_id}")
+                continue
 
-        # 3. Tính toán SVD để gợi ý cho người dùng mới (dựa trên các sản phẩm phổ biến)
+        # 3. Tính toán SVD cho người dùng mới
         all_items = df_products['ma_san_pham'].tolist()
         predictions = [model_svd.predict(user_id, item_id) for item_id in all_items]
         svd_scores = {str(pred.iid): pred.est for pred in predictions}
         cf_recommendations = sorted(svd_scores, key=svd_scores.get, reverse=True)[:top_n]
 
-        # Kết hợp Cosine Similarity và SVD để tạo danh sách cuối cùng
+        # Kết hợp Cosine Similarity và SVD
         combined_recommendations = list(set(content_recommendations + cf_recommendations))
 
         # 4. Xếp hạng lại dựa trên điểm số từ cả hai mô hình
         hybrid_scores = {}
-        content_scores_result = {}  # Lưu điểm content-based
-        svd_scores_result = {}  # Lưu điểm SVD
+        content_scores_result = {}
+        svd_scores_result = {}
         for item_id in combined_recommendations:
             content_score = 0
             if item_id in content_recommendations:
-                content_score = 1 / (content_recommendations.index(item_id) + 1)  # Xếp hạng dựa trên vị trí trong danh sách
+                content_score = 1 / (content_recommendations.index(item_id) + 1)
             cf_score = svd_scores.get(str(item_id), 0)
-
-            # Kết hợp điểm số từ cả 2 mô hình
             hybrid_scores[item_id] = weight_content * content_score + (1 - weight_content) * cf_score
             content_scores_result[item_id] = content_score
             svd_scores_result[item_id] = cf_score
 
-        # 5. Tạo DataFrame kết quả
+        # 5. Tạo DataFrame kết quả (đã thêm các cột từ df_products)
         recommendations_df = pd.DataFrame({
             'ma_san_pham': list(hybrid_scores.keys()),
-            'ten_san_pham': [df_products['ten_san_pham'][df_products['ma_san_pham'] == int(item_id)].values[0] for item_id in hybrid_scores.keys()],
+            'ten_san_pham': [product_info.get(int(item_id), {}).get('ten_san_pham') for item_id in hybrid_scores.keys()],
             'hybrid_score': list(hybrid_scores.values()),
             'content_score': list(content_scores_result.values()),
             'svd_score': list(svd_scores_result.values()),
-            'diem_trung_binh': [df_products['diem_trung_binh'][df_products['ma_san_pham'] == int(item_id)].values[0] for item_id in hybrid_scores.keys()]  # Thêm cột điểm trung bình
+            'diem_trung_binh': [product_info.get(int(item_id), {}).get('diem_trung_binh') for item_id in hybrid_scores.keys()],
+            'gia_ban': [product_info.get(int(item_id), {}).get('gia_ban') for item_id in hybrid_scores.keys()],
+            'ty_le_giam_gia': [product_info.get(int(item_id), {}).get('ty_le_giam_gia') for item_id in hybrid_scores.keys()],
+            'mo_ta': [product_info.get(int(item_id), {}).get('mo_ta') for item_id in hybrid_scores.keys()],
+            'volume': [product_info.get(int(item_id), {}).get('volume') for item_id in hybrid_scores.keys()]
         })
-
-        # 6. Sắp xếp và trả về top_n sản phẩm
-        recommendations_df = recommendations_df.sort_values(by='hybrid_score', ascending=False).head(top_n)
-
-        # 7. Tạo bảng thông tin bổ sung với các thông tin chi tiết như giá bán, tỷ lệ giảm giá, mô tả và volume
-        additional_info_df = df_products[df_products['ma_san_pham'].isin(hybrid_scores.keys())][
-            ['ma_san_pham', 'ten_san_pham', 'gia_ban', 'ty_le_giam_gia', 'diem_trung_binh', 'mo_ta', 'volume']
-        ]
 
     else:
         print("Đây là người dùng cũ.")
@@ -323,22 +321,22 @@ def simple_hybrid_recommendation(user_id, danh_gia, df_products, cosine_sim_new,
         rated_items = danh_gia[danh_gia['ma_khach_hang'] == user_id]['ma_san_pham'].tolist()
         all_items = df_products['ma_san_pham'].tolist()
         all_item_names = df_products['ten_san_pham'].tolist()
-        all_item_ratings = df_products['diem_trung_binh'].tolist()  # Lấy danh sách điểm trung bình của tất cả sản phẩm
+        all_item_ratings = df_products['diem_trung_binh'].tolist()
 
         # 1. Lọc các sản phẩm có điểm trung bình > 4
         high_rated_items = [item for item in all_items if df_products.loc[df_products['ma_san_pham'] == item, 'diem_trung_binh'].values[0] > 4]
 
-        # 2. Tạo danh sách gợi ý từ content-based (top N sản phẩm tương tự)
+        # 2. Tạo danh sách gợi ý từ content-based
         content_recommendations = []
         for item_id in rated_items:
-            if item_id in high_rated_items:  # Chỉ gợi ý các sản phẩm có điểm trung bình > 4
+            if item_id in high_rated_items:
                 idx = df_products[df_products['ma_san_pham'] == item_id].index[0]
                 sim_scores = list(enumerate(cosine_sim_new[idx]))
                 sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-                sim_scores = sim_scores[1:top_n+1]  # Lấy top N sản phẩm tương tự
+                sim_scores = sim_scores[1:top_n+1]
                 content_recommendations.extend([all_items[i[0]] for i in sim_scores])
 
-        # 3. Tạo danh sách gợi ý từ collaborative filtering (top N sản phẩm có xếp hạng cao nhất)
+        # 3. Tạo danh sách gợi ý từ collaborative filtering
         predictions = [model_svd.predict(user_id, item_id) for item_id in all_items]
         svd_scores = {str(pred.iid): pred.est for pred in predictions}
         cf_recommendations = sorted(svd_scores, key=svd_scores.get, reverse=True)[:top_n]
@@ -348,39 +346,36 @@ def simple_hybrid_recommendation(user_id, danh_gia, df_products, cosine_sim_new,
 
         # 5. Xếp hạng lại dựa trên điểm số từ cả hai mô hình
         hybrid_scores = {}
-        content_scores_result = {}  # Lưu điểm content-based
-        svd_scores_result = {}  # Lưu điểm SVD
+        content_scores_result = {}
+        svd_scores_result = {}
         for item_id in combined_recommendations:
             content_score = 0
             if item_id in content_recommendations:
-                content_score = 1 / (content_recommendations.index(item_id) + 1)  # Xếp hạng dựa trên vị trí trong danh sách
+                content_score = 1 / (content_recommendations.index(item_id) + 1)
             cf_score = svd_scores.get(str(item_id), 0)
-
-            # Kết hợp điểm số từ cả 2 mô hình
             hybrid_scores[item_id] = weight_content * content_score + (1 - weight_content) * cf_score
             content_scores_result[item_id] = content_score
             svd_scores_result[item_id] = cf_score
 
-        # 6. Tạo DataFrame kết quả
+        # 6. Tạo DataFrame kết quả (đã thêm các cột từ df_products)
         recommendations_df = pd.DataFrame({
             'ma_san_pham': list(hybrid_scores.keys()),
-            'ten_san_pham': [all_item_names[all_items.index(int(item_id))] for item_id in hybrid_scores.keys()],
+            'ten_san_pham': [product_info.get(int(item_id), {}).get('ten_san_pham') for item_id in hybrid_scores.keys()],
             'hybrid_score': list(hybrid_scores.values()),
             'content_score': list(content_scores_result.values()),
             'svd_score': list(svd_scores_result.values()),
-            'diem_trung_binh': [all_item_ratings[all_items.index(int(item_id))] for item_id in hybrid_scores.keys()]  # Thêm cột điểm trung bình
+            'diem_trung_binh': [product_info.get(int(item_id), {}).get('diem_trung_binh') for item_id in hybrid_scores.keys()],
+            'gia_ban': [product_info.get(int(item_id), {}).get('gia_ban') for item_id in hybrid_scores.keys()],
+            'ty_le_giam_gia': [product_info.get(int(item_id), {}).get('ty_le_giam_gia') for item_id in hybrid_scores.keys()],
+            'mo_ta': [product_info.get(int(item_id), {}).get('mo_ta') for item_id in hybrid_scores.keys()],
+            'volume': [product_info.get(int(item_id), {}).get('volume') for item_id in hybrid_scores.keys()]
         })
 
-        # 7. Sắp xếp và trả về top_n sản phẩm
+    # Sắp xếp và trả về top_n sản phẩm (sửa lỗi UnboundLocalError)
+    if not recommendations_df.empty:
         recommendations_df = recommendations_df.sort_values(by='hybrid_score', ascending=False).head(top_n)
 
-        # 8. Tạo bảng thông tin bổ sung với các thông tin chi tiết như giá bán, tỷ lệ giảm giá, mô tả và volume
-        additional_info_df = df_products[df_products['ma_san_pham'].isin(hybrid_scores.keys())][
-            ['ma_san_pham', 'ten_san_pham', 'gia_ban', 'ty_le_giam_gia', 'diem_trung_binh', 'mo_ta', 'volume']
-        ]
-
-    # Trả về kết quả
-    return recommendations_df, additional_info_df
+    return recommendations_df
 
 # Hiển thị nội dung tùy thuộc vào lựa chọn của người dùng
 if selected_option == 'Mục tiêu - Nội dung':
@@ -710,70 +705,57 @@ elif selected_option == 'Hybrid':
 
     if user_id:
         try:
-            recommendations_df, additional_info_df = simple_hybrid_recommendation(
+            recommendations_df = simple_hybrid_recommendation(
                 user_id,
-                danh_gia, # Truyền danh_gia vào hàm
+                danh_gia,
                 st.session_state.df_products,
                 cosine_sim_new,
-                model_svd,
-                weight_content=0.5
+                model_svd
             )
 
             # Kiểm tra người dùng mới hay cũ và hiển thị kết quả
             if check_if_new_user(user_id, danh_gia, st.session_state.khach_hang):
-                st.write(user_id," là người dùng mới.")
+                st.write(user_id, " là người dùng mới.")
             else:
-                st.write(user_id," là người dùng cũ.")
+                st.write(user_id, " là người dùng cũ.")
 
             st.write("Sản phẩm gợi ý:")
             st.dataframe(recommendations_df)
 
             # Hiển thị kết quả
-            if not recommendations_df.empty and not additional_info_df.empty:
-                st.write(f"Các sản phẩm gợi ý cho người dùng có user_id: {user_id}")
+            if not recommendations_df.empty:
+                st.write("Các sản phẩm gợi ý cho người dùng này")
 
-                # Giới hạn số lượng sản phẩm hiển thị (nếu cần)
-                additional_info_df = additional_info_df.head(3)
+                # Giới hạn 3 sản phẩm đầu
+                recommendations_df = recommendations_df.head(3)
 
-                # Tạo 3 cột cho 3 sản phẩm
+                # Tạo 3 cột
                 col1, col2, col3 = st.columns(3)
 
-                # Hiển thị từng sản phẩm trong một cột
-                # Hiển thị sản phẩm 1
-                with col1:
-                    product = additional_info_df.iloc[0]
-                    st.write(product['ten_san_pham'])
-                    st.write(f"Giá bán: {product['gia_ban']}")
-                    st.write(f"Giảm giá: {product['ty_le_giam_gia']:.0f}%")
-                    st.write(f"Điểm trung bình: {product['diem_trung_binh']}")
-                    st.write(f"Volume: {product['volume']}")
+                # CSS để hiển thị các cột theo hàng ngang
+                st.markdown(
+                    """
+                    <style>
+                    .stColumns {
+                        flex-direction: row !important;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                    with st.expander("Mô tả"):
-                        st.write(product['mo_ta'])
+                # Hiển thị sản phẩm
+                for i, col in enumerate([col1, col2, col3]):
+                    with col:
+                        product = recommendations_df.iloc[i]
+                        st.write(product['ten_san_pham'])
+                        st.write(f"Giá bán: {product['gia_ban']}")
+                        st.write(f"Giảm giá: {product['ty_le_giam_gia']:.0f}%")
+                        st.write(f"Điểm trung bình: {product['diem_trung_binh']}")
+                        st.write(f"Volume: {product['volume']}")
 
-                # Hiển thị sản phẩm 2
-                with col2:
-                    product = additional_info_df.iloc[1]
-                    st.write(product['ten_san_pham'])
-                    st.write(f"Giá bán: {product['gia_ban']}")
-                    st.write(f"Giảm giá: {product['ty_le_giam_gia']:.0f}%")
-                    st.write(f"Điểm trung bình: {product['diem_trung_binh']}")
-                    st.write(f"Volume: {product['volume']}")
-
-                    with st.expander("Mô tả"):
-                        st.write(product['mo_ta'])
-
-                # Hiển thị sản phẩm 3
-                with col3:
-                    product = additional_info_df.iloc[2]
-                    st.write(product['ten_san_pham'])
-                    st.write(f"Giá bán: {product['gia_ban']}")
-                    st.write(f"Giảm giá: {product['ty_le_giam_gia']:.0f}%")
-                    st.write(f"Điểm trung bình: {product['diem_trung_binh']}")
-                    st.write(f"Volume: {product['volume']}")
-
-                    with st.expander("Mô tả"):
-                        st.write(product['mo_ta'])
+                        with st.expander("Mô tả"):
+                            st.write(product['mo_ta'])
 
         except Exception as e:
             st.error(f"Đã xảy ra lỗi: {e}")
